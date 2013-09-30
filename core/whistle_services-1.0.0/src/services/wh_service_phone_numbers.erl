@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @copyright (C) 2012, VoIP, INC
+%%% @copyright (C) 2012-2013, 2600Hz, INC
 %%% @doc
 %%%
 %%% @end
@@ -19,7 +19,7 @@
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec feature_activation_charge/2 :: (ne_binary(), wh_services:services()) -> integer().
+-spec feature_activation_charge(ne_binary(), wh_services:services()) -> integer().
 feature_activation_charge(<<"dash_e911">>, Services) ->
     feature_activation_charge(<<"e911">>, Services);
 feature_activation_charge(Feature, Services) ->
@@ -32,7 +32,7 @@ feature_activation_charge(Feature, Services) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec phone_number_activation_charge/2 :: (ne_binary(), wh_services:services()) -> integer().
+-spec phone_number_activation_charge(ne_binary(), wh_services:services()) -> integer().
 phone_number_activation_charge(Number, Services) ->
     case wnm_util:classify_number(Number) of
         'undefined' -> 0;
@@ -47,7 +47,7 @@ phone_number_activation_charge(Number, Services) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec reconcile/1 :: (wh_services:services()) -> wh_services:services().
+-spec reconcile(wh_services:services()) -> wh_services:services().
 reconcile(Services) ->
     AccountId = wh_services:account_id(Services),
     AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
@@ -67,7 +67,7 @@ reconcile(Services) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec update_numbers/3 :: ([ne_binary(),...] | [], wh_json:object(), wh_services:services()) -> wh_services:services().
+-spec update_numbers(ne_binaries(), wh_json:object(), wh_services:services()) -> wh_services:services().
 update_numbers([], _, Services) ->
     Services;
 update_numbers([Number|Numbers], JObj, Services) ->
@@ -90,7 +90,7 @@ update_numbers([Number|Numbers], JObj, Services) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec update_number_quantities/2 :: (ne_binary(), wh_services:services()) -> wh_services:services().
+-spec update_number_quantities(ne_binary(), wh_services:services()) -> wh_services:services().
 update_number_quantities(Number, Services) ->
     case wnm_util:classify_number(Number) of
         'undefined' -> Services;
@@ -105,7 +105,7 @@ update_number_quantities(Number, Services) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec update_feature_quantities/2 :: ([ne_binary(),...] | [], wh_services:services()) -> wh_services:services().
+-spec update_feature_quantities(ne_binaries(), wh_services:services()) -> wh_services:services().
 update_feature_quantities([], Services) ->
     Services;
 update_feature_quantities([<<"dash_e911">>|Features], Services) ->
