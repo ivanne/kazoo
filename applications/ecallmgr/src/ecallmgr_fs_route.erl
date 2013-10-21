@@ -123,7 +123,7 @@ handle_info({'fetch', _Section, _Something, _Key, _Value, Id, ['undefined' | _Da
     {'noreply', State};
 handle_info({'fetch', 'dialplan', _Tag, _Key, _Value, FSId, [CallId | FSData]}, #state{node=Node}=State) ->
     case {props:get_value(<<"Event-Name">>, FSData), props:get_value(<<"Caller-Context">>, FSData)} of
-        {<<"REQUEST_PARAMS">>, ?WHISTLE_CONTEXT} ->
+        {<<"REQUEST_PARAMS">>, _} ->
             %% TODO: move this to a supervisor somewhere
             lager:info("processing dialplan fetch request ~s (call ~s) from ~s", [FSId, CallId, Node]),
             spawn(?MODULE, 'process_route_req', [Node, FSId, CallId, FSData]),
@@ -175,6 +175,7 @@ process_route_req(Node, FetchId, CallId, Props) ->
             lager:debug("recovered channel already exists on ~s, park it", [Node]),
             JObj = wh_json:from_list([{<<"Routes">>, []}
                                       ,{<<"Method">>, <<"park">>}
+                                      ,{<<"Context">>, hunt_context(Props)}
                                      ]),
             reply_affirmative(Node, FetchId, CallId, JObj)
     end.
@@ -192,10 +193,14 @@ search_for_route(Node, FetchId, CallId, Props) ->
             lager:info("did not receive route response for request ~s: ~p", [FetchId, _R]);
         {'ok', JObj} ->
             'true' = wapi_route:resp_v(JObj),
-            maybe_wait_for_authz(JObj, Node, FetchId, CallId)
+            J = wh_json:set_value(<<"Context">>, hunt_context(Props), JObj),
+            maybe_wait_for_authz(J, Node, FetchId, CallId)
     end.
 
-maybe_wait_for_authz(JObj, Node, FetchId, CallId) ->
+hunt_context(Props) ->
+    props:get_value(<<"Hunt-Context">>, Props, ?WHISTLE_CONTEXT).
+
+ maybe_wait_for_authz(JObj, Node, FetchId, CallId) ->
     case wh_util:is_true(ecallmgr_config:get(<<"authz_enabled">>, 'false')) 
         andalso wh_json:get_value(<<"Method">>, JObj) =/= <<"error">>
     of
@@ -233,25 +238,28 @@ reply_forbidden(Node, FetchId) ->
 reply_affirmative(Node, FetchId, CallId, JObj) ->
     lager:info("received affirmative route response for request ~s", [FetchId]),
     {'ok', XML} = ecallmgr_fs_xml:route_resp_xml(JObj),
-    ServerQ = wh_json:get_value(<<"Server-ID">>, JObj),
     lager:debug("sending XML to ~s: ~s", [Node, XML]),
-    FromURI = case wh_json:get_value(<<"From-URI">>, JObj) of
-                  'undefined' -> 
-                      FromUser = wh_json:get_value(<<"From-User">>, JObj, <<"${caller_id_number}">>),
-                      FromRealm = wh_json:get_value(<<"From-Realm">>, JObj, <<"${sip_from_host}">>),
-                      <<"sip:", FromUser/binary, "@", FromRealm/binary>>;
-                  Else -> Else
-              end,
     case freeswitch:fetch_reply(Node, FetchId, 'dialplan', iolist_to_binary(XML), 3000) of
+        {'error', _Reason} -> lager:debug("node ~s rejected our route response: ~p", [Node, _Reason]);
         'ok' ->
             lager:info("node ~s accepted route response for request ~s", [Node, FetchId]),
-            CCVs = wh_json:get_value(<<"Custom-Channel-Vars">>, JObj, wh_json:new()),
-            _ = ecallmgr_call_sup:start_event_process(Node, CallId),
-            _ = ecallmgr_call_sup:start_control_process(Node, CallId, FetchId, ServerQ, CCVs),
-            _ = ecallmgr_util:set(Node, CallId, wh_json:to_proplist(CCVs)),
-            ecallmgr_util:export(Node, CallId, [{<<"From-URI">>, FromURI}]);
-        {'error', _Reason} -> lager:debug("node ~s rejected our route response: ~p", [Node, _Reason])
+            maybe_start_call_handling(Node, FetchId, CallId, JObj)
     end.
+
+-spec maybe_start_call_handling(atom(), ne_binary(), ne_binary(), wh_json:object()) -> 'ok'.
+maybe_start_call_handling(Node, FetchId, CallId, JObj) ->
+    case wh_json:get_value(<<"Method">>, JObj) of
+        <<"error">> -> 'ok';
+        _Else -> start_call_handling(Node, FetchId, CallId, JObj)
+    end.
+
+-spec start_call_handling(atom(), ne_binary(), ne_binary(), wh_json:object()) -> 'ok'.
+start_call_handling(Node, FetchId, CallId, JObj) ->
+    ServerQ = wh_json:get_value(<<"Server-ID">>, JObj),
+    CCVs = wh_json:get_value(<<"Custom-Channel-Vars">>, JObj, wh_json:new()),
+    _ = ecallmgr_call_sup:start_event_process(Node, CallId),
+    _ = ecallmgr_call_sup:start_control_process(Node, CallId, FetchId, ServerQ, CCVs),
+    ecallmgr_util:set(Node, CallId, wh_json:to_proplist(CCVs)).   
 
 -spec route_req(ne_binary(), ne_binary(), wh_proplist(), atom()) -> wh_proplist().
 route_req(CallId, FetchId, Props, Node) ->

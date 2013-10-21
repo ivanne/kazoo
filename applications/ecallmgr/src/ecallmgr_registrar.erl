@@ -142,7 +142,8 @@ reg_flush(JObj, _Props) ->
 lookup_contact(Realm, Username) ->
     case ets:lookup(?MODULE, registration_id(Username, Realm)) of
         [#registration{contact=Contact}] ->
-            lager:info("found user ~s@~s contact ~s", [Username, Realm, Contact]),
+            lager:info("found user ~s@~s contact ~s"
+                       ,[Username, Realm, Contact]),
             {'ok', Contact};
         _Else -> fetch_contact(Username, Realm)
     end.
@@ -159,8 +160,9 @@ summary() ->
 summary(Realm) when not is_binary(Realm) ->
     summary(wh_util:to_binary(Realm));
 summary(Realm) ->
-    MatchSpec = [{#registration{realm = '$1', _ = '_'}
-                  ,[{'=:=', '$1', {const, Realm}}]
+    R = wh_util:to_lower_binary(Realm),
+    MatchSpec = [{#registration{id = {'_', '$1'}, _ = '_'}
+                  ,[{'=:=', '$1', {const, R}}]
                   ,['$_']
                  }],
     print_summary(ets:select(?MODULE, MatchSpec, 1)).
@@ -180,8 +182,9 @@ details(User) ->
     case binary:split(User, <<"@">>) of
         [Username, Realm] -> details(Username, Realm);
          _Else ->
-            MatchSpec = [{#registration{realm = '$1', _ = '_'}
-                          ,[{'=:=', '$1', {const, User}}]
+            Realm = wh_util:to_lower_binary(User),
+            MatchSpec = [{#registration{id = {'_', '$1'}, _ = '_'}
+                          ,[{'=:=', '$1', {const, Realm}}]
                           ,['$_']
                          }],
             print_details(ets:select(?MODULE, MatchSpec, 1))
@@ -193,10 +196,9 @@ details(Username, Realm) when not is_binary(Username) ->
 details(Username, Realm) when not is_binary(Realm) ->
     details(Username, wh_util:to_binary(Realm));
 details(Username, Realm) ->
-    MatchSpec = [{#registration{realm = '$1', username = '$2'
-                                ,_ = '_'}
-                  ,[{'andalso', {'=:=', '$1', {const, Realm}}
-                     ,{'=:=', '$2', {const, Username}}}]
+    Id =  registration_id(Username, Realm),
+    MatchSpec = [{#registration{id = '$1', _ = '_'}
+                  ,[{'=:=', '$1', {const, Id}}]
                   ,['$_']
                  }],
     print_details(ets:select(?MODULE, MatchSpec, 1)).
@@ -311,10 +313,11 @@ handle_cast('flush', State) ->
     _ = ets:delete_all_objects(?MODULE),
     {'noreply', State};
 handle_cast({'flush', Realm}, State) ->
-    MatchSpec = [{#registration{realm = '$1', _ = '_'}
-                  ,[{'=:=', '$1', {const, Realm}}]
-                  ,['true']}
-                ],
+    R = wh_util:to_lower_binary(Realm),
+    MatchSpec = [{#registration{id = {'_', '$1'}, _ = '_'}
+                  ,[{'=:=', '$1', {const, R}}]
+                  ,['true']
+                 }],
     NumberDeleted = ets:select_delete(?MODULE, MatchSpec),
     lager:debug("removed ~p expired registrations", [NumberDeleted]),
     {'noreply', State};
@@ -431,22 +434,26 @@ expire_objects() ->
 
 -spec expire_object(_) -> 'ok'.
 expire_object('$end_of_table') -> 'ok';
-expire_object({[#registration{id=Id, suppress_unregister='true'
-                              ,username=Username, realm=Realm
+expire_object({[#registration{id=Id
+                              ,suppress_unregister='true'
+                              ,username=Username
+                              ,realm=Realm
                               ,call_id=CallId}
                ], Continuation}) ->
     put(callid, CallId),
     lager:debug("registration ~s@~s expired", [Username, Realm]),
     _ = ets:delete(?MODULE, Id),
     expire_object(ets:select(Continuation));
-expire_object({[#registration{id=Id, username=Username, realm=Realm
+expire_object({[#registration{id=Id
+                              ,username=Username
+                              ,realm=Realm
                               ,call_id=CallId}=Reg
                ], Continuation}) ->
-    put(callid, CallId),
+    put('callid', CallId),
     lager:debug("registration ~s@~s expired", [Username, Realm]),
     _ = ets:delete(?MODULE, Id),
     _ = spawn(fun() ->
-                      put(callid, CallId),
+                      put('callid', CallId),
                       case oldest_registrar(Username, Realm) of
                           'false' -> 'ok';
                           'true' ->
@@ -473,18 +480,17 @@ maybe_resp_to_query(JObj) ->
 -spec resp_to_query(wh_json:object()) -> 'ok'.
 resp_to_query(JObj) ->
     Fields = wh_json:get_value(<<"Fields">>, JObj, []),
-    Realm = wh_json:get_value(<<"Realm">>, JObj),
+    Realm = wh_util:to_lower_binary(wh_json:get_value(<<"Realm">>, JObj)),
     MatchSpec = case wh_json:get_value(<<"Username">>, JObj) of
                     'undefined' ->
-                        [{#registration{realm = '$1', _ = '_'}
+                        [{#registration{id = {'_', '$1'}, _ = '_'}
                           ,[{'=:=', '$1', {const, Realm}}]
                           ,['$_']
                          }];
                     Username ->
-                        [{#registration{realm = '$1', username = '$2'
-                                        ,_ = '_'}
-                          ,[{'andalso', {'=:=', '$1', {const, Realm}}
-                             ,{'=:=', '$2', {const, Username}}}]
+                        Id = registration_id(Username, Realm),
+                        [{#registration{id = '$1', _ = '_'}
+                          ,[{'=:=', '$1', {const, Id}}]
                           ,['$_']
                          }]
                 end,
@@ -511,7 +517,7 @@ resp_to_query(JObj) ->
 
 -spec registration_id(ne_binary(), ne_binary()) -> {ne_binary(), ne_binary()}.
 registration_id(Username, Realm) ->
-    {Username, Realm}.
+    {wh_util:to_lower_binary(Username), wh_util:to_lower_binary(Realm)}.
 
 -spec create_registration(wh_json:object()) -> registration().
 create_registration(JObj) ->
@@ -748,10 +754,13 @@ print_summary(Match) ->
 print_summary('$end_of_table', Count) ->
     io:format("+-----------------------------------------------+------------------------+------------------------+----------------------------------+------+~n"),
     io:format("Found ~p registrations~n", [Count]);
-print_summary({[#registration{username=Username, realm=Realm
-                              ,contact=Contact, expires=Expires
+print_summary({[#registration{username=Username
+                              ,realm=Realm
+                              ,contact=Contact
+                              ,expires=Expires
                               ,last_registration=LastRegistration
-                              ,call_id=CallId}
+                              ,call_id=CallId
+                             }
                ], Continuation}
               ,Count) ->
     User = <<Username/binary, "@", Realm/binary>>,
